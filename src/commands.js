@@ -30,7 +30,29 @@ export function joinBackward(state, dispatch, view) {
   if (!$cut) {
     let range = $cursor.blockRange(), target = range && liftTarget(range)
     if (target == null) return false
-    if (dispatch) dispatch(state.tr.lift(range, target).scrollIntoView())
+    if (dispatch) {
+      // If target has children, lift them up first.
+      let tr = state.tr;
+      if (range.parent.childCount > 0) {
+        range.parent.forEach(function (child, offsetFromParent, index) {
+          if (index > 0 && (
+            child.type.name === 'bullet_list' ||
+            child.type.name === 'ordered_list')
+          ) {
+            // Get the child's first paragraph and lift it.
+            child.forEach(function (li, offsetFromUl, index2) {
+              if (li.type.name === 'list_item') {
+                const $from = tr.doc.resolve($cursor.pos - 1 + offsetFromParent + 1 + offsetFromUl + 2);
+                const $to = tr.doc.resolve($cursor.pos - 1 + offsetFromParent + 1 + offsetFromUl + 2 + li.firstChild.nodeSize - 2);
+                const childRange = $from.blockRange($to);
+                tr = tr.lift(childRange, liftTarget(childRange));
+              }
+            });
+          }
+        });
+      }
+      dispatch(tr.lift(range, target).scrollIntoView());
+    }
     return true
   }
 
