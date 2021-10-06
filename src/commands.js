@@ -434,28 +434,53 @@ function deleteBarrier(state, $cut, dispatch) {
       // This block is copied from prosemirror-schema-list
       let itemType = paragraphRange.parent.type;
 
-      let {$from, $to} = state.selection
+      let { $from, $to } = state.selection
       let range = $from.blockRange($to, node => node.childCount && node.firstChild.type == itemType)
-    
-      let tr = state.tr, end = range.end, endOfList = range.$to.end(range.depth)
-      console.log(`end: ${end}, startOfList: ${range.$to.start(range.depth)}, endOfList: ${endOfList}`);
-      if (end < endOfList) {
-        // There are siblings after the lifted items, which must become
-        // children of the last item
-        console.log(`Parent: ${range.parent.toString()}`);
-        console.log(`parent.copy() creates empty node of parent's markup: ${range.parent.copy()}`);
-        console.log(`create ListItem: ${itemType.create(null, range.parent.copy())}`);
-        console.log(`Fragment: ${Fragment.from(itemType.create(null, range.parent.copy())).toString()}`);
-        tr.step(new ReplaceAroundStep(end - 1, endOfList, end, endOfList,
-                                      new Slice(Fragment.from(itemType.create(null, range.parent.copy())), 1, 0), 1, true))
-        range = new NodeRange(tr.doc.resolve(range.$from.pos), tr.doc.resolve(endOfList), range.depth)
+
+      const target = liftTarget(range);
+      if (target && target > 0) {
+        let tr = state.tr, end = range.end, endOfList = range.$to.end(range.depth)
+        console.log(`end: ${end}, startOfList: ${range.$to.start(range.depth)}, endOfList: ${endOfList}`);
+        if (end < endOfList) {
+          // There are siblings after the lifted items, which must become
+          // children of the last item
+          console.log(`Parent: ${range.parent.toString()}`);
+          console.log(`parent.copy() creates empty node of parent's markup: ${range.parent.copy()}`);
+          console.log(`create ListItem: ${itemType.create(null, range.parent.copy())}`);
+          console.log(`Fragment: ${Fragment.from(itemType.create(null, range.parent.copy())).toString()}`);
+          tr.step(new ReplaceAroundStep(end - 1, endOfList, end, endOfList,
+            new Slice(Fragment.from(itemType.create(null, range.parent.copy())), 1, 0), 1, true))
+          range = new NodeRange(tr.doc.resolve(range.$from.pos), tr.doc.resolve(endOfList), range.depth)
+        }
+        dispatch(tr.lift(range, liftTarget(range)).scrollIntoView())
+      } else {
+        // This is top level item. The item will turn into a paragraph whichi does not have children.
+        // If target has children, lift them up first.
+        let tr = state.tr;
+        // range.parent : ul
+        // range.parent.firstChild : li
+        if (range.parent.firstChild.childCount > 0) {
+          range.parent.firstChild.forEach(function (child, offsetFromParent, index) {
+            if (index > 0 && (
+              child.type.name === 'bullet_list' ||
+              child.type.name === 'ordered_list')
+            ) {
+              // Get the child's first paragraph and lift it.
+              child.forEach(function (li, offsetFromUl, index2) {
+                if (li.type.name === 'list_item') {
+                  console.log(tr.doc.toString());
+                  const $from = tr.doc.resolve($cut.pos + 1 + offsetFromParent + 1 + offsetFromUl + 2);
+                  const $to = tr.doc.resolve($cut.pos + 1 + offsetFromParent + 1 + offsetFromUl + 2 + li.firstChild.nodeSize - 2);
+                  const childRange = $from.blockRange($to);
+                  tr = tr.lift(childRange, liftTarget(childRange));
+                }
+              });
+            }
+          });
+        }
+        dispatch(tr.lift(paragraphRange, 0).scrollIntoView());
       }
-      dispatch(tr.lift(range, liftTarget(range)).scrollIntoView())
- 
-      // var tr = state.tr.lift(range, target);
-      // if (canJoin(tr.doc, $cut.pos)) { tr.join($cut.pos); }
-      // dispatch(tr.scrollIntoView());
-    
+
     }
     return true
   }
