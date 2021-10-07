@@ -31,27 +31,8 @@ export function joinBackward(state, dispatch, view) {
     let range = $cursor.blockRange(), target = range && liftTarget(range)
     if (target == null) return false
     if (dispatch) {
-      // If target has children, lift them up first.
-      let tr = state.tr;
-      if (range.parent.childCount > 0) {
-        range.parent.forEach(function (child, offsetFromParent, index) {
-          if (index > 0 && (
-            child.type.name === 'bullet_list' ||
-            child.type.name === 'ordered_list')
-          ) {
-            // Get the child's first paragraph and lift it.
-            child.forEach(function (li, offsetFromUl, index2) {
-              if (li.type.name === 'list_item') {
-                const $from = tr.doc.resolve($cursor.pos - 1 + offsetFromParent + 1 + offsetFromUl + 2);
-                const $to = tr.doc.resolve($cursor.pos - 1 + offsetFromParent + 1 + offsetFromUl + 2 + li.firstChild.nodeSize - 2);
-                const childRange = $from.blockRange($to);
-                tr = tr.lift(childRange, liftTarget(childRange));
-              }
-            });
-          }
-        });
-      }
-      dispatch(tr.lift(range, target).scrollIntoView());
+      // Lift the heading list item in depth 1 up to depth 0.
+      liftHeadingItem(range.parent, $cursor, state, dispatch);
     }
     return true
   }
@@ -426,6 +407,56 @@ function joinMaybeClear(state, $pos, dispatch) {
   return true
 }
 
+function liftHeadingItem(parentItem, $cursor, state, dispatch) {
+  // Lift the heading list item in depth 1 up to depth 0.
+  // e.g.) 
+  // doc(paragraph, bullet_list(list_item(paragraph("a"), bullet_list(list_item(paragraph("b"), bullet_list(list_item(paragraph("c"))))))))
+  // Heading list item is list_item(paragraph("a")).
+  // Press Backspace key when cursor positoin is just before character "a".
+  //
+  // The heading list item will turn into a paragraph which does not have children.
+  // If the heading list has other children, lift them up to depth 1 first.
+
+  var tr = state.tr;
+  if (parentItem.childCount > 0) {
+    parentItem.forEach(function (child, offsetFromParentItem, index) {
+      if (index > 0 && (
+        child.type.name === 'bullet_list' ||
+        child.type.name === 'ordered_list')
+      ) {
+        // Get other children and lift them up to depth 1
+        child.forEach(function (li, offsetFromParentList, index2) {
+          if (li.type.name === 'list_item') {
+            var itemType = li.type;
+
+            // Exec function which equals to liftToOuterList()
+            // See prosemirror-schema-list
+
+            // Each lift operation just moves an elder sibling up.
+            // So, offset of younger items are unchanged after lift operation in forEach loop.
+            var $from = tr.doc.resolve($cursor.pos - 1 + offsetFromParentItem + 1 + offsetFromParentList);
+            var $to = tr.doc.resolve($cursor.pos - 1 + offsetFromParentItem + 1 + offsetFromParentList + li.nodeSize);
+            var childRange = $from.blockRange($to);
+
+            let end = childRange.end, endOfList = childRange.$to.end(childRange.depth);
+            if (end < endOfList) {
+              tr.step(new ReplaceAroundStep(end - 1, endOfList, end, endOfList,
+                new Slice(Fragment.from(itemType.create(null, childRange.parent.copy())), 1, 0), 1, true))
+              childRange = new NodeRange(tr.doc.resolve(childRange.$from.pos), tr.doc.resolve(endOfList), childRange.depth);
+            }
+
+            tr.lift(childRange, 1);
+          }
+        });
+      }
+    });
+  }
+  const $newPos = tr.doc.resolve($cursor.pos);
+  const newRange = $newPos.blockRange($newPos);
+  tr.lift(newRange, 0);
+  dispatch(tr.scrollIntoView());
+}
+
 function deleteBarrier(state, $cut, dispatch) {
   let before = $cut.nodeBefore, after = $cut.nodeAfter, conn, match
   if (before.type.spec.isolating || after.type.spec.isolating) return false
@@ -454,57 +485,37 @@ function deleteBarrier(state, $cut, dispatch) {
     if (dispatch) {
       // Exec liftToOuterList() in prosemirror-schema-list
       // This block is copied from prosemirror-schema-list
-      let itemType = paragraphRange.parent.type;
+      var itemType = paragraphRange.parent.type; // list-item
 
-      let { $from, $to } = state.selection
-      let range = $from.blockRange($to, node => node.childCount && node.firstChild.type == itemType)
+      // selAfter shows selection at cursor position
+      var $from = selAfter.$from;
+      var $to = selAfter.$to;
+      var itemRange = $from.blockRange($to, function (node) { return node.childCount && node.firstChild.type == itemType; });
 
-      const target = liftTarget(range);
-      if (target && target > 0) {
-        let tr = state.tr, end = range.end, endOfList = range.$to.end(range.depth)
-        console.log(`end: ${end}, startOfList: ${range.$to.start(range.depth)}, endOfList: ${endOfList}`);
-        if (end < endOfList) {
+      var target$1 = liftTarget(itemRange);
+      if (target$1 && target$1 > 0) {
+        var tr$1 = state.tr, end$1 = itemRange.end, endOfList = itemRange.$to.end(itemRange.depth);
+        console.log(("end: " + end$1 + ", startOfList: " + (itemRange.$to.start(itemRange.depth)) + ", endOfList: " + endOfList));
+        if (end$1 < endOfList) {
           // There are siblings after the lifted items, which must become
           // children of the last item
-          console.log(`Parent: ${range.parent.toString()}`);
-          console.log(`parent.copy() creates empty node of parent's markup: ${range.parent.copy()}`);
-          console.log(`create ListItem: ${itemType.create(null, range.parent.copy())}`);
-          console.log(`Fragment: ${Fragment.from(itemType.create(null, range.parent.copy())).toString()}`);
-          tr.step(new ReplaceAroundStep(end - 1, endOfList, end, endOfList,
-            new Slice(Fragment.from(itemType.create(null, range.parent.copy())), 1, 0), 1, true))
-          range = new NodeRange(tr.doc.resolve(range.$from.pos), tr.doc.resolve(endOfList), range.depth)
+          console.log(("Parent: " + (itemRange.parent.toString())));
+          console.log(("parent.copy() creates empty node of parent's markup: " + (itemRange.parent.copy())));
+          console.log(("create ListItem: " + (itemType.create(null, itemRange.parent.copy()))));
+          console.log(("Fragment: " + (Fragment.from(itemType.create(null, itemRange.parent.copy())).toString())));
+          tr$1.step(new ReplaceAroundStep(end$1 - 1, endOfList, end$1, endOfList,
+            new Slice(Fragment.from(itemType.create(null, itemRange.parent.copy())), 1, 0), 1, true));
+          itemRange = new NodeRange(tr$1.doc.resolve(itemRange.$from.pos), tr$1.doc.resolve(endOfList), itemRange.depth);
         }
-        dispatch(tr.lift(range, liftTarget(range)).scrollIntoView())
+        dispatch(tr$1.lift(itemRange, liftTarget(itemRange)).scrollIntoView());
       } else {
-        // This is top level item. The item will turn into a paragraph whichi does not have children.
-        // If target has children, lift them up first.
-        let tr = state.tr;
-        // range.parent : ul
-        // range.parent.firstChild : li
-        if (range.parent.firstChild.childCount > 0) {
-          range.parent.firstChild.forEach(function (child, offsetFromParent, index) {
-            if (index > 0 && (
-              child.type.name === 'bullet_list' ||
-              child.type.name === 'ordered_list')
-            ) {
-              // Get the child's first paragraph and lift it.
-              child.forEach(function (li, offsetFromUl, index2) {
-                if (li.type.name === 'list_item') {
-                  console.log(tr.doc.toString());
-                  const $from = tr.doc.resolve($cut.pos + 1 + offsetFromParent + 1 + offsetFromUl + 2);
-                  const $to = tr.doc.resolve($cut.pos + 1 + offsetFromParent + 1 + offsetFromUl + 2 + li.firstChild.nodeSize - 2);
-                  const childRange = $from.blockRange($to);
-                  tr = tr.lift(childRange, liftTarget(childRange));
-                }
-              });
-            }
-          });
-        }
-        dispatch(tr.lift(paragraphRange, 0).scrollIntoView());
+        // Lift the heading list item in depth 1 up to depth 0.
+        // resolve(itemRange.start).nodeAfter is list item node
+        liftHeadingItem(state.doc.resolve(itemRange.start).nodeAfter, selAfter.$from, state, dispatch);
       }
 
     }
-    return true
+    return true;
   }
 
   if (canDelAfter && textblockAt(after, "start", true) && textblockAt(before, "end")) {
